@@ -48,12 +48,19 @@ impl CPU {
         match instruction.function() {
             0b001111 => self.op_lui(instruction),
             0b001101 => self.op_ori(instruction),
+            0b101011 => self.op_sw(instruction),
             _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
         }
     }
 
+    /// Read a 32-bit word from memory at the specified address
     fn mem_read32(&self, addr: u32) -> u32 {
         self.bus.mem_read32(addr)
+    }
+
+    /// Write a 32-bit word to memory at the specified address
+    fn mem_write32(&mut self, addr: u32, val: u32) {
+        self.bus.mem_write32(addr, val)
     }
 
     fn get_reg(&self, index: u32) -> u32 {
@@ -70,7 +77,7 @@ impl CPU {
     /// Load Upper Immediate
     fn op_lui(&mut self, instruction: Instruction) {
         let i = instruction.immediate();
-        let t = instruction.target();
+        let t = instruction.rt();
 
         // Low 16 bits are set to 0
         let v = i << 16;
@@ -81,12 +88,24 @@ impl CPU {
     /// Bitwise OR immediate
     fn op_ori(&mut self, instruction: Instruction) {
         let i = instruction.immediate();
-        let t = instruction.target();
-        let s = instruction.s();
+        let s = instruction.rs();
+        let t = instruction.rt();
 
         let v = self.get_reg(s) | i;
 
         self.set_reg(t, v);
+    }
+
+    /// Store word
+    fn op_sw(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let addr = self.get_reg(s).wrapping_add(i);
+        let val = self.get_reg(t);
+
+        self.mem_write32(addr, val);
     }
 }
 
@@ -138,8 +157,15 @@ impl Instruction {
         op >> 26
     }
 
-    /// Reads the target register index from bits [20:16] of the instruction
-    fn target(&self) -> u32 {
+    /// Reads the register index in bits [25:21] of the instruction
+    fn rs(&self) -> u32 {
+        let Instruction(op) = self;
+
+        (op >> 21) & 0x1f
+    }
+
+    /// Reads the register index from bits [20:16] of the instruction
+    fn rt(&self) -> u32 {
         let Instruction(op) = self;
 
         (op >> 16) & 0x1f
@@ -152,10 +178,12 @@ impl Instruction {
         op &0xffff
     }
 
-    /// Return register index in bits [25:21] of the instruction
-    fn s(self) -> u32 {
+    /// Reads the immediate value from bits [16:0] as a sign-extended 32-bit value
+    fn immediate_signed(&self) -> u32 {
         let Instruction(op) = self;
 
-        (op >> 21) & 0x1f
+        let val = (op & 0xffff) as i16;
+
+        val as u32
     }
 }

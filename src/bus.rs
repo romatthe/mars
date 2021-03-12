@@ -12,8 +12,11 @@
 
 use crate::cpu::{BIOS, BIOS_SIZE};
 
-const BIOS_START: u32 = 0xbfc00000;
-const BIOS_END: u32 = BIOS_START + BIOS_SIZE - 1;
+/// BIOS image region
+const BIOS: MemRange = MemRange(0xbfc00000 , 512 * 1024);
+
+/// Memory latency and expansion mapping region
+const MEM_CONTROL: MemRange = MemRange(0x1f801000, 36);
 
 /// Memory bus for shared memory access
 pub struct Bus {
@@ -29,9 +32,66 @@ impl Bus {
     }
 
     pub fn mem_read32(&self, addr: u32) -> u32 {
-        match addr {
-            BIOS_START..=BIOS_END => self.bios.mem_read32(addr - BIOS_START),
-            _ => panic!("UNHANDLED_READ32_AT_ADDRESS_{:08x}", addr),
+        // Unaligned memory access is not allowed
+        if addr % 4 != 0 {
+            panic!("UNALIGNED_READ32_AT_ADDRESS_0x{:08x}", addr);
+        }
+
+        // BIOS
+        if let Some(offset) = BIOS.contains(addr) {
+            return self.bios.mem_read32(offset);
+        }
+
+        panic!("UNHANDLED_READ32_AT_ADDRESS_0x{:08x}", addr);
+    }
+
+    pub fn mem_write32(&mut self, addr: u32, val: u32) {
+        // Unaligned memory access is not allowed
+        if addr % 4 != 0 {
+            panic!("UNALIGNED_WRITE32_AT_ADDRESS_0x{:08x}", addr);
+        }
+
+        // Memory Control
+        if let Some(offset) = MEM_CONTROL.contains(addr) {
+            match offset {
+                // Expansion 1 base address
+                0 => {
+                    if val != 0x1f000000 {
+                        panic!("BAD_EXPANSION_1_BASE_ADDRESS: 0x{:08x}", addr);
+                    }
+                },
+                // Expansion 2 base address
+                4 => {
+                    if val != 0x1f802000 {
+                        panic!("BAD_EXPANSION_2_BASE_ADDRESS: 0x{:08x}", addr);
+                    }
+                },
+                _ => {
+                    println!("UNHANDLED_MEMCONTROL_REGISTER_WRITE32: 0x{:08x}", addr);
+                }
+            }
+            // TODO: This is a bit disgusting
+            return;
+        }
+
+        panic!("UNHANDLED_WRITE32_AT_ADDRESS_0x{:08x}", addr);
+    }
+}
+
+/// A range in the PSX memory map
+struct MemRange(pub u32, pub u32);
+
+
+impl MemRange {
+    /// Return `Some(offset)` if addr is contained within this memory range
+    fn contains(self, addr: u32) -> Option<u32> {
+        let MemRange(start, length) = self;
+
+
+        if addr >= start && addr < start + length {
+            Some(addr - start)
+        } else {
+            None
         }
     }
 }
