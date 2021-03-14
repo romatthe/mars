@@ -14,6 +14,11 @@ pub struct CPU {
     sr: u32,
     /// The CPU's 32 general-purpose registers
     regs: [u32; 32],
+    /// The 2nd set of registers used to emulate the load-delay slot accurately. The contain
+    /// the output of the current instruction.
+    out_regs: [u32; 32],
+    /// Load initiated by the current instruction
+    load: (RegisterIndex, u32),
     /// Bus that controls memory map
     bus: Bus,
 }
@@ -33,6 +38,9 @@ impl CPU {
             next_instruction: Instruction(0x0),
             sr: 0,
             regs,
+            // The out-regs are the same as the the regular registers on reset
+            out_regs: regs,
+            load: (RegisterIndex(0), 0),
             bus,
         }
     }
@@ -50,9 +58,20 @@ impl CPU {
         // Increment the PC to the next instruction (MIPS architecture has fixed length instructions)
         self.pc = pc.wrapping_add(4);
 
+        // Execute the pending load (if any, otherwise it will load $zero which is NOP).
+        // `set_reg` works only on `out_regs` so this operation won't be visible the next instruction.
+        let (RegisterIndex(reg), val) = self.load;
+        self.set_reg(RegisterIndex(reg), val);
+
+        // We reset the load to target register 0 for the next instruction;
+        self.load = (RegisterIndex(0), 0);
+
         println!("Instruction: 0x{:08x}", instruction);
 
         self.exec(Instruction(instruction));
+
+        // Copy the output registers as input for the next instruction
+        self.regs = self.out_regs;
     }
 
     /// Decode and execute an instruction
@@ -93,10 +112,10 @@ impl CPU {
     }
 
     fn set_reg(&mut self, index: RegisterIndex, value: u32) {
-        self.regs[index.0 as usize] = value;
+        self.out_regs[index.0 as usize] = value;
 
         // Register 0 is hardwired to 0x0
-        self.regs[0] = 0;
+        self.out_regs[0] = 0;
     }
 
     /// Branch to immediate value `offset`
@@ -175,6 +194,23 @@ impl CPU {
         self.set_reg(t, v);
     }
 
+    fn op_lw(&mut self, instruction: Instruction) {
+        if self.sr & 0x10000 != 0 {
+            // Ignore cache writes
+            println!("IGNORING_READ_WHILE_CACHE_IS_ISOLATED");
+        } else {
+            let i = instruction.immediate_signed();
+            let t = instruction.rt();
+            let s = instruction.rs();
+
+            let addr = self.get_reg(s).wrapping_add(i);
+            let v = self.mem_read32(addr);
+
+            self.load = (t, v);
+        }
+    }
+
+    /// Move To Coprocessor 0
     fn op_mtc0(&mut self, instruction: Instruction) {
         let cpu_r = instruction.rt();
         let cop_r = instruction.rd().0;
@@ -225,7 +261,7 @@ impl CPU {
     fn op_sw(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
             // Ignore cache writes
-            println!("IGNORING_WRITE32_WHILE_CACHE_IS_ISOLATED");
+            println!("IGNORING_WRITE_WHILE_CACHE_IS_ISOLATED");
         } else {
             let i = instruction.immediate_signed();
             let s = instruction.rs();
