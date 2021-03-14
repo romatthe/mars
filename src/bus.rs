@@ -56,7 +56,7 @@ impl Bus {
         }
 
         // RAM
-        if let Some(offset) = BIOS.contains(addr) {
+        if let Some(offset) = RAM.contains(addr) {
             return self.ram.mem_read32(offset);
         }
 
@@ -98,8 +98,10 @@ impl Bus {
             return;
         }
 
+        // RAM
         if let Some(offset) = RAM.contains(addr) {
             self.ram.mem_write32(offset, val);
+            return;
         }
 
         // RAM_SIZE register

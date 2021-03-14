@@ -66,7 +66,7 @@ impl CPU {
         // We reset the load to target register 0 for the next instruction;
         self.load = (RegisterIndex(0), 0);
 
-        println!("Instruction: 0x{:08x}", instruction);
+        println!("Instruction: 0x{:08x} -- 0b{:06b} -- 0b{:06b}", instruction, Instruction(instruction).function(), Instruction(instruction).subfunction());
 
         self.exec(Instruction(instruction));
 
@@ -80,10 +80,11 @@ impl CPU {
             // Subfunctions
             0b000000 => match instruction.subfunction() {
                 0b000000 => self.op_sll(instruction),
+                0b100001 => self.op_addu(instruction),
                 0b100101 => self.op_or(instruction),
+                0b101011 => self.op_sltu(instruction),
                 _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
             }
-
             0b000010 => self.op_j(instruction),
             0b000101 => self.op_bne(instruction),
             0b001000 => self.op_addi(instruction),
@@ -159,6 +160,17 @@ impl CPU {
         self.set_reg(t, v);
     }
 
+    /// Add Unsigned
+    fn op_addu(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+        let t = instruction.rt();
+        let d = instruction.rd();
+
+        let v = self.get_reg(s).wrapping_add(self.get_reg(t));
+
+        self.set_reg(d, v);
+    }
+
     fn op_bne(&mut self, instruction: Instruction) {
         let i = instruction.immediate_signed();
         let s = instruction.rs();
@@ -220,9 +232,22 @@ impl CPU {
         let v = self.get_reg(cpu_r);
 
         match cop_r {
-            // Register 12 is the Cop0 status register
+            // COP0 Breakpoint registers
+            3 | 5 | 6 | 7 | 9 | 11 => {
+                if v != 0 {
+                    // TODO: Is it necessary to support these?
+                    unimplemented!("UNHANDLED_WRITE_TO_COP0_BREAKPOINT_REGISTER {}", cop_r);
+                }
+            },
+            // COP0 Status register
             12 => self.sr = v,
-            n => unimplemented!("UNHANDLED_COP0_REGISTER_0x{:08x}", instruction.0),
+            // COP0 Cause register
+            13 => {
+                if v != 0 {
+                    unimplemented!("UNHANDLED_WRITE_TO_COP0_CAUSE_REGISTER");
+                }
+            },
+            _ => unimplemented!("UNHANDLED_COP0_REGISTER_0x{:08x}", instruction.0),
         }
     }
 
@@ -259,6 +284,17 @@ impl CPU {
         self.set_reg(d, v);
     }
 
+    /// Set On Less Then Unsigned
+    fn op_sltu(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let v = self.get_reg(s) < self.get_reg(t);
+
+        self.set_reg(d, v as u32);
+    }
+
     /// Store word
     fn op_sw(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
@@ -274,7 +310,6 @@ impl CPU {
 
             self.mem_write32(addr, val);
         }
-
     }
 }
 
@@ -328,7 +363,7 @@ impl Instruction {
         (op >> 21) & 0x1f
     }
 
-    /// Reads the function from bits [31:36] of the instruction
+    /// Reads the function from bits [31:26] of the instruction
     fn function(&self) -> u32 {
         let Instruction(op) = self;
 
@@ -390,6 +425,6 @@ impl Instruction {
     fn subfunction(&self) -> u32 {
         let Instruction(op) = self;
 
-        (op >> 6) & 0x1f
+        op & 0x3f
     }
 }

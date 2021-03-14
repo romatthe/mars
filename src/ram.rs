@@ -6,7 +6,7 @@ pub struct RAM {
 
 impl RAM {
     pub fn new() -> Self {
-        /// Initialize the RAM buffer to garbage values
+        // Initialize the RAM buffer to garbage values
         let data = vec![0xca; 2 * 1024 * 1024];
 
         RAM { data }
