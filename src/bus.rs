@@ -15,6 +15,9 @@ use crate::cpu::{BIOS, BIOS_SIZE};
 /// BIOS image region
 const BIOS: MemRange = MemRange(0xbfc00000 , 512 * 1024);
 
+/// Cache control register
+const CACHE_CONTROL: MemRange = MemRange(0xfffe0130, 4);
+
 /// Memory latency and expansion mapping region
 const MEM_CONTROL: MemRange = MemRange(0x1f801000, 36);
 
@@ -52,6 +55,12 @@ impl Bus {
         // Unaligned memory access is not allowed
         if addr % 4 != 0 {
             panic!("UNALIGNED_WRITE32_AT_ADDRESS_0x{:08x}", addr);
+        }
+
+        // CACHE_CONTROL register
+        if let Some(_) = CACHE_CONTROL.contains(addr) {
+            // TODO: We're ignoring this right now, not sure if this should be the case
+            return;
         }
 
         // Memory Control
