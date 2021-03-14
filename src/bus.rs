@@ -11,6 +11,7 @@
 //!       FFFE0000h (KSEG2)        0.5K   I/O Ports (Cache Control)
 
 use crate::cpu::{BIOS, BIOS_SIZE};
+use crate::ram::RAM;
 
 /// BIOS image region
 const BIOS: MemRange = MemRange(0xbfc00000 , 512 * 1024);
@@ -21,6 +22,9 @@ const CACHE_CONTROL: MemRange = MemRange(0xfffe0130, 4);
 /// Memory latency and expansion mapping region
 const MEM_CONTROL: MemRange = MemRange(0x1f801000, 36);
 
+/// RAM region
+const RAM: MemRange = MemRange(0xa0000000, 2 * 1024 * 1024);
+
 /// Register that has something to do with RAM configuration configured by the BIOS
 const RAM_SIZE: MemRange = MemRange(0x1f801060, 4);
 
@@ -28,12 +32,15 @@ const RAM_SIZE: MemRange = MemRange(0x1f801060, 4);
 pub struct Bus {
     /// Basic Input/Output System memory
     bios: BIOS,
+    /// General purpose working memory
+    ram: RAM,
 }
 
 impl Bus {
-    pub fn new(bios: BIOS) -> Self {
+    pub fn new(bios: BIOS, ram: RAM) -> Self {
         Self {
-            bios
+            bios,
+            ram
         }
     }
 
@@ -46,6 +53,11 @@ impl Bus {
         // BIOS
         if let Some(offset) = BIOS.contains(addr) {
             return self.bios.mem_read32(offset);
+        }
+
+        // RAM
+        if let Some(offset) = BIOS.contains(addr) {
+            return self.ram.mem_read32(offset);
         }
 
         panic!("UNHANDLED_READ32_AT_ADDRESS_0x{:08x}", addr);
@@ -84,6 +96,10 @@ impl Bus {
             }
             // TODO: This is a bit disgusting
             return;
+        }
+
+        if let Some(offset) = RAM.contains(addr) {
+            self.ram.mem_write32(offset, val);
         }
 
         // RAM_SIZE register

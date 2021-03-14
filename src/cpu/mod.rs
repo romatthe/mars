@@ -19,7 +19,7 @@ pub struct CPU {
     out_regs: [u32; 32],
     /// Load initiated by the current instruction
     load: (RegisterIndex, u32),
-    /// Bus that controls memory map
+    /// Bus that controls memory access
     bus: Bus,
 }
 
@@ -88,9 +88,10 @@ impl CPU {
             0b000101 => self.op_bne(instruction),
             0b001000 => self.op_addi(instruction),
             0b001001 => self.op_addiu(instruction),
-            0b001101 => self.op_ori(instruction),
             0b001111 => self.op_lui(instruction),
+            0b001101 => self.op_ori(instruction),
             0b010000 => self.op_cop0(instruction),
+            0b100011 => self.op_lw(instruction),
             0b101011 => self.op_sw(instruction),
 
             _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
@@ -194,6 +195,7 @@ impl CPU {
         self.set_reg(t, v);
     }
 
+    /// Load Word
     fn op_lw(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
             // Ignore cache writes
