@@ -46,9 +46,18 @@ impl CPU {
     /// Decode and execute an instruction
     fn exec(&mut self, instruction: Instruction) {
         match instruction.function() {
-            0b001111 => self.op_lui(instruction),
+            // Subfunctions
+            0b000000 => match instruction.subfunction() {
+                0b000000 => self.op_sll(instruction),
+                _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
+            }
+
+            0b000010 => self.op_j(instruction),
+            0b001001 => self.op_addiu(instruction),
             0b001101 => self.op_ori(instruction),
+            0b001111 => self.op_lui(instruction),
             0b101011 => self.op_sw(instruction),
+
             _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
         }
     }
@@ -74,6 +83,24 @@ impl CPU {
         self.regs[0] = 0;
     }
 
+    /// Add Immedate Unsigned
+    fn op_addiu(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let t = instruction.rt();
+        let s = instruction.rs();
+
+        let v = self.get_reg(s).wrapping_add(i);
+
+        self.set_reg(t, v);
+    }
+
+    /// Jump
+    fn op_j(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_jump();
+
+        self.pc = (self.pc & 0xf0000000) | (i << 2);
+    }
+
     /// Load Upper Immediate
     fn op_lui(&mut self, instruction: Instruction) {
         let i = instruction.immediate();
@@ -94,6 +121,17 @@ impl CPU {
         let v = self.get_reg(s) | i;
 
         self.set_reg(t, v);
+    }
+
+    /// Shift Left Logical
+    fn op_sll(&mut self, instruction: Instruction) {
+        let i = instruction.shift();
+        let t = instruction.rt();
+        let d = instruction.rd();
+
+        let v = self.get_reg(t) << i;
+
+        self.set_reg(d, v);
     }
 
     /// Store word
@@ -157,6 +195,36 @@ impl Instruction {
         op >> 26
     }
 
+    /// Reads the immediate value from bits [16:0] of the instruction
+    fn immediate(&self) -> u32 {
+        let Instruction(op) = self;
+
+        op &0xffff
+    }
+
+    /// Reads the jump target stored in bits [25:0]
+    fn immediate_jump(&self) -> u32 {
+        let Instruction(op) = self;
+
+        op & 0x3ffffff
+    }
+
+    /// Reads the immediate value from bits [16:0] as a sign-extended 32-bit value
+    fn immediate_signed(&self) -> u32 {
+        let Instruction(op) = self;
+
+        let val = (op & 0xffff) as i16;
+
+        val as u32
+    }
+
+    /// Reads the register index in bits [15:11] of the instruction
+    fn rd(&self) -> u32 {
+        let Instruction(op) = self;
+
+        (op >> 11) % 0x1f
+    }
+
     /// Reads the register index in bits [25:21] of the instruction
     fn rs(&self) -> u32 {
         let Instruction(op) = self;
@@ -171,19 +239,17 @@ impl Instruction {
         (op >> 16) & 0x1f
     }
 
-    /// Reads the immediate value from bits [16:0] of the instruction
-    fn immediate(&self) -> u32 {
+    /// Reads the shifted immediate value from bits [10:6] of the instruction
+    fn shift(&self) -> u32 {
         let Instruction(op) = self;
 
-        op &0xffff
+        (op >> 6) & 0x1f
     }
 
-    /// Reads the immediate value from bits [16:0] as a sign-extended 32-bit value
-    fn immediate_signed(&self) -> u32 {
+    /// Reads the subfunction from bits [5:0] of the instruction
+    fn subfunction(&self) -> u32 {
         let Instruction(op) = self;
 
-        let val = (op & 0xffff) as i16;
-
-        val as u32
+        (op >> 6) & 0x1f
     }
 }

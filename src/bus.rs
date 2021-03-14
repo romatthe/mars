@@ -18,6 +18,9 @@ const BIOS: MemRange = MemRange(0xbfc00000 , 512 * 1024);
 /// Memory latency and expansion mapping region
 const MEM_CONTROL: MemRange = MemRange(0x1f801000, 36);
 
+/// Register that has something to do with RAM configuration configured by the BIOS
+const RAM_SIZE: MemRange = MemRange(0x1f801060, 4);
+
 /// Memory bus for shared memory access
 pub struct Bus {
     /// Basic Input/Output System memory
@@ -71,6 +74,12 @@ impl Bus {
                 }
             }
             // TODO: This is a bit disgusting
+            return;
+        }
+
+        // RAM_SIZE register
+        if let Some(_) = RAM_SIZE.contains(addr) {
+            // TODO: We're ignoring this right now, not sure if this should be the case
             return;
         }
 
