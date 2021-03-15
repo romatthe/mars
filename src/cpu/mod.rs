@@ -93,6 +93,7 @@ impl CPU {
             0b001101 => self.op_ori(instruction),
             0b010000 => self.op_cop0(instruction),
             0b100011 => self.op_lw(instruction),
+            0b101001 => self.op_sh(instruction),
             0b101011 => self.op_sw(instruction),
 
             _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
@@ -104,9 +105,14 @@ impl CPU {
         self.bus.mem_read32(addr)
     }
 
+    /// Write a 16-bit word to memory at the specified address
+    fn mem_write16(&mut self, addr: u32, val: u16) {
+        self.bus.mem_write16(addr, val);
+    }
+
     /// Write a 32-bit word to memory at the specified address
     fn mem_write32(&mut self, addr: u32, val: u32) {
-        self.bus.mem_write32(addr, val)
+        self.bus.mem_write32(addr, val);
     }
 
     fn get_reg(&self, index: RegisterIndex) -> u32 {
@@ -293,6 +299,22 @@ impl CPU {
         let v = self.get_reg(s) < self.get_reg(t);
 
         self.set_reg(d, v as u32);
+    }
+
+    fn op_sh(&mut self, instruction: Instruction) {
+        if self.sr & 0x10000 != 0 {
+            // Ignore cache writes
+            println!("IGNORING_WRITE_WHILE_CACHE_IS_ISOLATED");
+        } else {
+            let i = instruction.immediate_signed();
+            let t = instruction.rt();
+            let s = instruction.rs();
+
+            let addr = self.get_reg(s).wrapping_add(i);
+            let v = self.get_reg(t);
+
+            self.mem_write16(addr, v as u16);
+        }
     }
 
     /// Store word

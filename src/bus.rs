@@ -14,19 +14,44 @@ use crate::cpu::{BIOS, BIOS_SIZE};
 use crate::ram::RAM;
 
 /// BIOS image region
-const BIOS: MemRange = MemRange(0xbfc00000 , 512 * 1024);
+const BIOS: MemRange = MemRange(0x1fc00000 , 512 * 1024);
 
-/// Cache control register
+/// Cache control register (Full address since it's in KSEG2)
 const CACHE_CONTROL: MemRange = MemRange(0xfffe0130, 4);
 
 /// Memory latency and expansion mapping region
 const MEM_CONTROL: MemRange = MemRange(0x1f801000, 36);
 
 /// RAM region
-const RAM: MemRange = MemRange(0xa0000000, 2 * 1024 * 1024);
+const RAM: MemRange = MemRange(0x00000000, 2 * 1024 * 1024);
 
 /// Register that has something to do with RAM configuration configured by the BIOS
 const RAM_SIZE: MemRange = MemRange(0x1f801060, 4);
+
+/// Registers with an unknown purpose, the name comes from the Mednafen PSX implementation
+const SYS_CONTROL: MemRange = MemRange(0x1f801000, 36);
+
+/// Mask array used to strip the region bits of the address. The mask is selected using the 3 most
+/// significant bits of the address so each entry effectively matches 512KB of the address space.
+/// KSEG2 is not touched since it doesn't share anything with the other regions.
+const REGION_MASK: [u32; 8] = [
+    // KUSEG: 2048MB
+    0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+    // KSEG0: 512MB
+    0x7fffffff,
+    // KSEG1: 512MB
+    0x1fffffff,
+    // KSEG2: 1024MB
+    0xffffffff, 0xffffffff
+];
+
+/// Mask a CPU address to remove the region bits
+pub fn mask_region(addr: u32) -> u32 {
+    // Index address space in 512MB chunks
+    let index = (addr >> 29) as usize;
+
+    addr & REGION_MASK[index]
+}
 
 /// Memory bus for shared memory access
 pub struct Bus {
@@ -50,17 +75,28 @@ impl Bus {
             panic!("UNALIGNED_READ32_AT_ADDRESS_0x{:08x}", addr);
         }
 
+        let abs_addr = mask_region(addr);
+
         // BIOS
-        if let Some(offset) = BIOS.contains(addr) {
+        if let Some(offset) = BIOS.contains(abs_addr) {
             return self.bios.mem_read32(offset);
         }
 
         // RAM
-        if let Some(offset) = RAM.contains(addr) {
+        if let Some(offset) = RAM.contains(abs_addr) {
             return self.ram.mem_read32(offset);
         }
 
-        panic!("UNHANDLED_READ32_AT_ADDRESS_0x{:08x}", addr);
+        panic!("UNHANDLED_READ32_AT_ADDRESS_0x{:08x}", abs_addr);
+    }
+
+    pub fn mem_write16(&mut self, addr: u32, val: u16) {
+        // Unaligned memory access is not allowed
+        if addr % 4 != 0 {
+            panic!("UNALIGNED_WRITE16_AT_ADDRESS_0x{:08x}", addr);
+        }
+
+        panic!("UNHANDLED_WRITE16_AT_ADDRESS_0x{:08x}", addr);
     }
 
     pub fn mem_write32(&mut self, addr: u32, val: u32) {
@@ -69,29 +105,31 @@ impl Bus {
             panic!("UNALIGNED_WRITE32_AT_ADDRESS_0x{:08x}", addr);
         }
 
+        let abs_addr = mask_region(addr);
+
         // CACHE_CONTROL register
-        if let Some(_) = CACHE_CONTROL.contains(addr) {
+        if let Some(_) = CACHE_CONTROL.contains(abs_addr) {
             // TODO: We're ignoring this right now, not sure if this should be the case
             return;
         }
 
         // Memory Control
-        if let Some(offset) = MEM_CONTROL.contains(addr) {
+        if let Some(offset) = MEM_CONTROL.contains(abs_addr) {
             match offset {
                 // Expansion 1 base address
                 0 => {
                     if val != 0x1f000000 {
-                        panic!("BAD_EXPANSION_1_BASE_ADDRESS: 0x{:08x}", addr);
+                        panic!("BAD_EXPANSION_1_BASE_ADDRESS: 0x{:08x}", abs_addr);
                     }
                 },
                 // Expansion 2 base address
                 4 => {
                     if val != 0x1f802000 {
-                        panic!("BAD_EXPANSION_2_BASE_ADDRESS: 0x{:08x}", addr);
+                        panic!("BAD_EXPANSION_2_BASE_ADDRESS: 0x{:08x}", abs_addr);
                     }
                 },
                 _ => {
-                    println!("UNHANDLED_MEMCONTROL_REGISTER_WRITE32: 0x{:08x}", addr);
+                    println!("UNHANDLED_MEMCONTROL_REGISTER_WRITE32: 0x{:08x}", abs_addr);
                 }
             }
             // TODO: This is a bit disgusting
@@ -99,18 +137,18 @@ impl Bus {
         }
 
         // RAM
-        if let Some(offset) = RAM.contains(addr) {
+        if let Some(offset) = RAM.contains(abs_addr) {
             self.ram.mem_write32(offset, val);
             return;
         }
 
         // RAM_SIZE register
-        if let Some(_) = RAM_SIZE.contains(addr) {
+        if let Some(_) = RAM_SIZE.contains(abs_addr) {
             // TODO: We're ignoring this right now, not sure if this should be the case
             return;
         }
 
-        panic!("UNHANDLED_WRITE32_AT_ADDRESS_0x{:08x}", addr);
+        panic!("UNHANDLED_WRITE32_AT_ADDRESS_0x{:08x}", abs_addr);
     }
 }
 
