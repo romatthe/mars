@@ -25,6 +25,9 @@ const EXPANSION1: MemRange = MemRange(0x1f000000, 512 * 1024);
 /// Expansion 2 region
 const EXPANSION2: MemRange = MemRange(0x1f802000, 66);
 
+/// Interrupt Control registers
+const IRQ_CONTROL: MemRange = MemRange(0x1f801070, 8);
+
 /// Memory latency and expansion mapping region
 const MEM_CONTROL: MemRange = MemRange(0x1f801000, 36);
 
@@ -165,6 +168,12 @@ impl Bus {
         // CACHE_CONTROL register
         if let Some(_) = CACHE_CONTROL.contains(abs_addr) {
             // TODO: We're ignoring this right now, not sure if this should be the case
+            return;
+        }
+
+        if let Some(offset) = IRQ_CONTROL.contains(abs_addr) {
+            println!("IRQ_CONTROL:{:x}<-{:08x}", offset, val);
+            // TODO: This is a bit disgusting
             return;
         }
 

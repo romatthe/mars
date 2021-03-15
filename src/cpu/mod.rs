@@ -109,6 +109,17 @@ impl CPU {
         }
     }
 
+    fn get_reg(&self, index: RegisterIndex) -> u32 {
+        self.regs[index.0 as usize]
+    }
+
+    fn set_reg(&mut self, index: RegisterIndex, value: u32) {
+        self.out_regs[index.0 as usize] = value;
+
+        // Register 0 is hardwired to 0x0
+        self.out_regs[0] = 0;
+    }
+
     /// Read a single byte from memory at the specified address
     fn mem_read8(&self, addr: u32) -> u8 {
         self.bus.mem_read8(addr)
@@ -132,17 +143,6 @@ impl CPU {
     /// Write a 32-bit word to memory at the specified address
     fn mem_write32(&mut self, addr: u32, val: u32) {
         self.bus.mem_write32(addr, val);
-    }
-
-    fn get_reg(&self, index: RegisterIndex) -> u32 {
-        self.regs[index.0 as usize]
-    }
-
-    fn set_reg(&mut self, index: RegisterIndex, value: u32) {
-        self.out_regs[index.0 as usize] = value;
-
-        // Register 0 is hardwired to 0x0
-        self.out_regs[0] = 0;
     }
 
     /// Branch to immediate value `offset`
