@@ -80,19 +80,28 @@ impl CPU {
             // Subfunctions
             0b000000 => match instruction.subfunction() {
                 0b000000 => self.op_sll(instruction),
+                0b001000 => self.op_jr(instruction),
+                0b100000 => self.op_add(instruction),
                 0b100001 => self.op_addu(instruction),
+                0b100100 => self.op_and(instruction),
                 0b100101 => self.op_or(instruction),
                 0b101011 => self.op_sltu(instruction),
                 _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
             }
+
             0b000010 => self.op_j(instruction),
+            0b000011 => self.op_jal(instruction),
+            0b000100 => self.op_beq(instruction),
             0b000101 => self.op_bne(instruction),
             0b001000 => self.op_addi(instruction),
             0b001001 => self.op_addiu(instruction),
-            0b001111 => self.op_lui(instruction),
+            0b001100 => self.op_andi(instruction),
             0b001101 => self.op_ori(instruction),
+            0b001111 => self.op_lui(instruction),
             0b010000 => self.op_cop0(instruction),
+            0b100000 => self.op_lb(instruction),
             0b100011 => self.op_lw(instruction),
+            0b101000 => self.op_sb(instruction),
             0b101001 => self.op_sh(instruction),
             0b101011 => self.op_sw(instruction),
 
@@ -100,9 +109,19 @@ impl CPU {
         }
     }
 
+    /// Read a single byte from memory at the specified address
+    fn mem_read8(&self, addr: u32) -> u8 {
+        self.bus.mem_read8(addr)
+    }
+
     /// Read a 32-bit word from memory at the specified address
     fn mem_read32(&self, addr: u32) -> u32 {
         self.bus.mem_read32(addr)
+    }
+
+    /// Write a single byte to memory at the specified address
+    fn mem_write8(&mut self, addr: u32, val: u8) {
+        self.bus.mem_write8(addr, val);
     }
 
     /// Write a 16-bit word to memory at the specified address
@@ -166,6 +185,23 @@ impl CPU {
         self.set_reg(t, v);
     }
 
+    /// Add and generate an exception on overflow
+    fn op_add(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+        let t = instruction.rt();
+        let d = instruction.rd();
+
+        let s = self.get_reg(s) as i32;
+        let t = self.get_reg(t) as i32;
+
+        let v = match s.checked_add(t) {
+            Some(v) => v as u32,
+            None => panic!("ADD_OVERFLOW"),
+        };
+
+        self.set_reg(d, v);
+    }
+
     /// Add Unsigned
     fn op_addu(&mut self, instruction: Instruction) {
         let s = instruction.rs();
@@ -177,6 +213,40 @@ impl CPU {
         self.set_reg(d, v);
     }
 
+    /// Bitwise AND
+    fn op_and(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let v = self.get_reg(s) & self.get_reg(t);
+
+        self.set_reg(d, v);
+    }
+
+    /// Bitwise AND Immediate
+    fn op_andi(&mut self, instruction: Instruction) {
+        let i = instruction.immediate();
+        let t = instruction.rt();
+        let s = instruction.rs();
+
+        let v = self.get_reg(s) & i;
+
+        self.set_reg(t, v);
+    }
+
+    /// Branch if Equal
+    fn op_beq(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        if self.get_reg(s) == self.get_reg(t) {
+            self.branch(i)
+        }
+    }
+
+    /// Branch If Not Equal
     fn op_bne(&mut self, instruction: Instruction) {
         let i = instruction.immediate_signed();
         let s = instruction.rs();
@@ -190,6 +260,7 @@ impl CPU {
     /// Coprocessor 0 opcode
     fn op_cop0(&mut self, instruction: Instruction) {
         match instruction.cop_opcode() {
+            0b00000 => self.op_mfc0(instruction),
             0b00100 => self.op_mtc0(instruction),
             code => unimplemented!("UNHANDLED_COP0_INSTRUCTION_0x{:08x}", code),
         }
@@ -200,6 +271,38 @@ impl CPU {
         let i = instruction.immediate_jump();
 
         self.pc = (self.pc & 0xf0000000) | (i << 2);
+    }
+
+    /// Jump and Link
+    fn op_jal(&mut self, instruction: Instruction) {
+        let ra = self.pc;
+
+        // The return address is stored in register 31
+        self.set_reg(RegisterIndex(31), ra);
+
+        self.op_j(instruction);
+    }
+
+    /// Jump Register
+    fn op_jr(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+
+        self.pc = self.get_reg(s);
+    }
+
+    /// Load Byte
+    fn op_lb(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let t = instruction.rt();
+        let s = instruction.rs();
+
+        let addr = self.get_reg(s).wrapping_add(i);
+
+        // Cast as i8 to force sign extension
+        let v = self.mem_read8(addr) as i8;
+
+        // Put the load in the delay slot
+        self.load = (t, v as u32);
     }
 
     /// Load Upper Immediate
@@ -228,6 +331,20 @@ impl CPU {
 
             self.load = (t, v);
         }
+    }
+
+    /// Move From Coprocessor 0
+    fn op_mfc0(&mut self, instruction: Instruction) {
+        let cpu_r = instruction.rt();
+        let cop_r = instruction.rd().0;
+
+        let v = match cop_r {
+            12 => self.sr,
+            13 => unimplemented!("UNHANDLED_READ_FROM_COP0_CAUSE_REGISTER"),
+            _  => unimplemented!("UNHANDLED_READ_FROM_COP0_REGISTER_{}", cop_r),
+        };
+
+        self.load = (cpu_r, v);
     }
 
     /// Move To Coprocessor 0
@@ -279,6 +396,23 @@ impl CPU {
         self.set_reg(t, v);
     }
 
+    /// Store Byte
+    fn op_sb(&mut self, instruction: Instruction) {
+        if self.sr & 0x10000 != 0 {
+            // Ignore cache writes
+            println!("IGNORING_READ_WHILE_CACHE_IS_ISOLATED");
+        } else {
+            let i = instruction.immediate_signed();
+            let t = instruction.rt();
+            let s = instruction.rs();
+
+            let addr = self.get_reg(s).wrapping_add(i);
+            let v = self.get_reg(t);
+
+            self.mem_write8(addr, v as u8);
+        }
+    }
+
     /// Shift Left Logical
     fn op_sll(&mut self, instruction: Instruction) {
         let i = instruction.shift();
@@ -301,6 +435,7 @@ impl CPU {
         self.set_reg(d, v as u32);
     }
 
+    /// Store Half-word
     fn op_sh(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
             // Ignore cache writes
@@ -358,6 +493,11 @@ impl BIOS {
         } else {
             Err(io::Error::new(ErrorKind::InvalidInput, "INVALID_BIOS_SIZE"))
         }
+    }
+
+    /// Read a single byte from the BIOS at the specified address
+    pub fn mem_read8(&self, offset: u32) -> u8 {
+        self.data[offset as usize]
     }
 
     /// Read a 32-bit word from the BIOS at the specified offset

@@ -12,6 +12,11 @@ impl RAM {
         RAM { data }
     }
 
+    /// Read a single byte at `offset`
+    pub fn mem_read8(&self, offset: u32) -> u8 {
+        self.data[offset as usize]
+    }
+
     /// Read the 32 bit little endian word at `offset`
     pub fn mem_read32(&self, offset: u32) -> u32 {
         let offset = offset as usize;
@@ -22,6 +27,11 @@ impl RAM {
         let b3 = self.data[offset + 3];
 
         u32::from_le_bytes([b0, b1, b2, b3])
+    }
+
+    /// Write a single byte `val` in `offset`
+    pub fn mem_write8(&mut self, offset: u32, val: u8) {
+        self.data[offset as usize] = val;
     }
 
     /// Write the 32 bit little endian word `val` in `offset`

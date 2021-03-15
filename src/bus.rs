@@ -19,6 +19,12 @@ const BIOS: MemRange = MemRange(0x1fc00000 , 512 * 1024);
 /// Cache control register (Full address since it's in KSEG2)
 const CACHE_CONTROL: MemRange = MemRange(0xfffe0130, 4);
 
+/// Expansion 1 region
+const EXPANSION1: MemRange = MemRange(0x1f000000, 512 * 1024);
+
+/// Expansion 2 region
+const EXPANSION2: MemRange = MemRange(0x1f802000, 66);
+
 /// Memory latency and expansion mapping region
 const MEM_CONTROL: MemRange = MemRange(0x1f801000, 36);
 
@@ -27,6 +33,9 @@ const RAM: MemRange = MemRange(0x00000000, 2 * 1024 * 1024);
 
 /// Register that has something to do with RAM configuration configured by the BIOS
 const RAM_SIZE: MemRange = MemRange(0x1f801060, 4);
+
+/// Registers for the SPU
+const SPU: MemRange = MemRange(0x1f801c00, 640);
 
 /// Registers with an unknown purpose, the name comes from the Mednafen PSX implementation
 const SYS_CONTROL: MemRange = MemRange(0x1f801000, 36);
@@ -69,6 +78,27 @@ impl Bus {
         }
     }
 
+    /// Read a single byte from memory at the specified address
+    pub fn mem_read8(&self, addr: u32) -> u8 {
+        let abs_addr = mask_region(addr);
+
+        if let Some(offset) = BIOS.contains(abs_addr) {
+            return self.bios.mem_read8(offset);
+        }
+
+        if let Some(offset) = EXPANSION1.contains(abs_addr) {
+            // No expansion implemented
+            return 0xff;
+        }
+
+        if let Some(offset) = RAM.contains(abs_addr) {
+            return self.ram.mem_read8(offset);
+        }
+
+        panic!("UNHANDLED_READ8_AT_ADDRESS_0x{:08x}", abs_addr);
+    }
+
+    /// Read a 32-bit word from memory at the specified address
     pub fn mem_read32(&self, addr: u32) -> u32 {
         // Unaligned memory access is not allowed
         if addr % 4 != 0 {
@@ -90,15 +120,40 @@ impl Bus {
         panic!("UNHANDLED_READ32_AT_ADDRESS_0x{:08x}", abs_addr);
     }
 
+    /// Write a single byte to memory at the specified address
+    pub fn mem_write8(&mut self, addr: u32, val: u8) {
+        let abs_addr = mask_region(addr);
+
+        if let Some(offset) = EXPANSION2.contains(abs_addr) {
+            println!("UNHANDLED_EXPANSION2_REGISTER_WRITE8: 0x{:08x}", abs_addr);
+            return;
+        }
+
+        if let Some(offset) = RAM.contains(abs_addr) {
+            return self.ram.mem_write8(offset, val);
+        }
+
+        panic!("UNHANDLED_WRITE8_AT_ADDRESS_0x{:08x}", addr);
+    }
+
+    /// Write a 16-bit word to memory at the specified address
     pub fn mem_write16(&mut self, addr: u32, val: u16) {
         // Unaligned memory access is not allowed
-        if addr % 4 != 0 {
+        if addr % 2 != 0 {
             panic!("UNALIGNED_WRITE16_AT_ADDRESS_0x{:08x}", addr);
+        }
+
+        let abs_addr = mask_region(addr);
+
+        if let Some(offset) = SPU.contains(abs_addr) {
+            println!("UNHANDLED_SPU_REGISTER_WRITE16: 0x{:08x}", abs_addr);
+            return;
         }
 
         panic!("UNHANDLED_WRITE16_AT_ADDRESS_0x{:08x}", addr);
     }
 
+    /// Write a 32-bit word to memory at the specified address
     pub fn mem_write32(&mut self, addr: u32, val: u32) {
         // Unaligned memory access is not allowed
         if addr % 4 != 0 {
