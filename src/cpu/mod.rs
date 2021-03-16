@@ -8,10 +8,16 @@ use crate::bus::Bus;
 pub struct CPU {
     /// The program counter register, holding the address of the next instruction
     pc: u32,
-    /// Next instruction to be executed, used to simulate the branch delay slot
-    next_instruction: Instruction,
+    /// Address of the instruction currently being executed. Used for setting the EPC in exceptions
+    pc_current: u32,
+    /// Next value for the Program Counter, used to simulate the branch delay slot
+    pc_next: u32,
     /// Cop0 status register (register 12)
     sr: u32,
+    /// Cop0 register 13: the Cause register
+    cause: u32,
+    /// Cop0 register 14: the EPC
+    epc: u32,
     /// The CPU's 32 general-purpose registers
     regs: [u32; 32],
     /// The 2nd set of registers used to emulate the load-delay slot accurately. The contain
@@ -35,12 +41,17 @@ impl CPU {
         // Register 0 is hardwired to 0x0
         regs[0] = 0x0;
 
+        // Set the PC to the beginning of the PSX BIOS
+        let pc = 0xbfc00000;
+
         CPU {
-            // Set the PC to the beginning of the PSX BIOS
-            pc: 0xbfc00000,
-            // Set the next instruction to a NOP
-            next_instruction: Instruction(0x0),
+            pc,
+            pc_current: pc,
+            // Set the next pc four bytes ahead of the current PC
+            pc_next: pc.wrapping_add(4),
             sr: 0,
+            cause: 0,
+            epc: 0,
             regs,
             // The out-regs are the same as the the regular registers on reset
             out_regs: regs,
@@ -53,33 +64,32 @@ impl CPU {
 
     /// Fetch the next instruction and execute it
     pub fn step(&mut self) {
-        let pc = self.pc;
+        // Fetch the instruction at the current PC
+        let instruction = Instruction(self.mem_read32(self.pc));
 
-        // Use previously loaded instruction
-        let instruction = self.next_instruction.0;
+        // Save the address of the current instruction to save in `EPC` in case of an exception
+        self.pc_current = self.pc;
 
-        // Fetch the next instruction
-        self.next_instruction = Instruction(self.mem_read32(pc));
-
-        // Increment the PC to the next instruction (MIPS architecture has fixed length instructions)
-        self.pc = pc.wrapping_add(4);
+        // Increment the next PC to point to the next instruction
+        self.pc = self.pc_next;
+        self.pc_next = self.pc_next.wrapping_add(4);
 
         // Execute the pending load (if any, otherwise it will load $zero which is NOP).
         // `set_reg` works only on `out_regs` so this operation won't be visible the next instruction.
         let (RegisterIndex(reg), val) = self.load;
         self.set_reg(RegisterIndex(reg), val);
 
-        // We reset the load to target register 0 for the next instruction;
+        // We reset the load to target register 0 for the next instruction
         self.load = (RegisterIndex(0), 0);
 
         println!("Instruction: 0x{:08x} -- 0b{:06b} -- 0b{:06b} -- PC: 0x{:08x}",
-                instruction,
-                Instruction(instruction).function(),
-                Instruction(instruction).subfunction(),
-                pc
+                instruction.0,
+                instruction.function(),
+                instruction.subfunction(),
+                self.pc
         );
 
-        self.exec(Instruction(instruction));
+        self.exec(instruction);
 
         // Copy the output registers as input for the next instruction
         self.regs = self.out_regs;
@@ -95,6 +105,7 @@ impl CPU {
                 0b000011 => self.op_sra(instruction),
                 0b001000 => self.op_jr(instruction),
                 0b001001 => self.op_jalr(instruction),
+                0b001100 => self.op_syscall(instruction),
                 0b010000 => self.op_mfhi(instruction),
                 0b010010 => self.op_mflo(instruction),
                 0b011010 => self.op_div(instruction),
@@ -104,6 +115,7 @@ impl CPU {
                 0b100011 => self.op_subu(instruction),
                 0b100100 => self.op_and(instruction),
                 0b100101 => self.op_or(instruction),
+                0b101010 => self.op_slt(instruction),
                 0b101011 => self.op_sltu(instruction),
                 _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
             }
@@ -176,10 +188,43 @@ impl CPU {
         // have to be aligned on 32 bits at all times
         let offset = offset << 2;
 
-        self.pc = self.pc
-            .wrapping_add(offset)
+        self.pc_next = self.pc
+            .wrapping_add(offset);
             // We need to compensate for the hardcoded `pc.wrapping_add(4)` in `exec()`
-            .wrapping_sub(4);
+            // .wrapping_sub(4);
+    }
+
+    /// Trigger an exception
+    fn exception(&mut self, cause: Exception) {
+        // Exception handler address depends on the 'BEV' bit
+        let handler = match self.sr & (1 << 22) != 0 {
+            true => 0xbfc00180,
+            false => 0x80000080,
+        };
+
+        // Shift bits [5:0] of 'SR' two places to the left. Those bits are three pairs of
+        // "Interrupt Enable / User Mode" bits behaving like a stack 3 entries deep. Entering
+        // an exception pushes a pair of zeroes by left shifting the stack which disables interrupts
+        // and puts the CPU in kernel mode. The original third entry is discarded (it's up to the
+        // kernel to handle mode than two recursive exception levels).
+        let mode = self.sr & 0x3f;
+        self.sr = self.sr & 0x3f;
+        self.sr = self.sr | (mode << 2) & 0x3f;
+
+        // Update the Cause register with the exception code (bits [6:2])
+        self.cause = (cause as u32) << 2;
+
+        // Save current instruction address in 'EPC'
+        self.epc = self.pc_current;
+
+        // Exceptions do not have a branch delay, we dump directly in the handler
+        self.pc = handler;
+        self.pc_next = self.pc.wrapping_add(4);
+    }
+
+    /// System call
+    fn op_syscall(&mut self, _: Instruction) {
+        self.exception(Exception::SysCall);
     }
 
     /// Add Immediate Unsigned and check for overflow
@@ -328,7 +373,7 @@ impl CPU {
 
         if test != 0 {
             if is_link {
-                let ra = self.pc;
+                let ra = self.pc_next;
 
                 // Store return address in R31
                 self.set_reg(RegisterIndex(31), ra);
@@ -396,12 +441,12 @@ impl CPU {
     fn op_j(&mut self, instruction: Instruction) {
         let i = instruction.immediate_jump();
 
-        self.pc = (self.pc & 0xf0000000) | (i << 2);
+        self.pc_next = (self.pc & 0xf0000000) | (i << 2);
     }
 
     /// Jump and Link
     fn op_jal(&mut self, instruction: Instruction) {
-        let ra = self.pc;
+        let ra = self.pc_next;
 
         // The return address is stored in register 31
         self.set_reg(RegisterIndex(31), ra);
@@ -414,19 +459,19 @@ impl CPU {
         let d = instruction.rd();
         let s = instruction.rs();
 
-        let ra = self.pc;
+        let ra = self.pc_next;
 
         // Store return address in register d
         self.set_reg(d, ra);
 
-        self.pc = self.get_reg(s);
+        self.pc_next = self.get_reg(s);
     }
 
     /// Jump Register
     fn op_jr(&mut self, instruction: Instruction) {
         let s = instruction.rs();
 
-        self.pc = self.get_reg(s);
+        self.pc_next = self.get_reg(s);
     }
 
     /// Load Byte
@@ -435,11 +480,7 @@ impl CPU {
         let t = instruction.rt();
         let s = instruction.rs();
 
-        let f = self.get_reg(s);
-
-        let g = format!("0x{:08x}", f);
-
-        let addr = f.wrapping_add(i);
+        let addr = self.get_reg(s).wrapping_add(i);
 
         // Cast as i8 to force sign extension
         let v = self.mem_read8(addr) as i8;
@@ -496,7 +537,8 @@ impl CPU {
 
         let v = match cop_r {
             12 => self.sr,
-            13 => unimplemented!("UNHANDLED_READ_FROM_COP0_CAUSE_REGISTER"),
+            13 => self.cause,
+            14 => self.epc,
             _  => unimplemented!("UNHANDLED_READ_FROM_COP0_REGISTER_{}", cop_r),
         };
 
@@ -583,6 +625,23 @@ impl CPU {
         }
     }
 
+    /// Store Half-word
+    fn op_sh(&mut self, instruction: Instruction) {
+        if self.sr & 0x10000 != 0 {
+            // Ignore cache writes
+            println!("IGNORING_WRITE_WHILE_CACHE_IS_ISOLATED");
+        } else {
+            let i = instruction.immediate_signed();
+            let t = instruction.rt();
+            let s = instruction.rs();
+
+            let addr = self.get_reg(s).wrapping_add(i);
+            let v = self.get_reg(t);
+
+            self.mem_write16(addr, v as u16);
+        }
+    }
+
     /// Shift Left Logical
     fn op_sll(&mut self, instruction: Instruction) {
         let i = instruction.shift();
@@ -616,6 +675,31 @@ impl CPU {
         self.set_reg(t, v as u32);
     }
 
+    /// Set on Less Than signed
+    fn op_slt(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let s = self.get_reg(s) as i32;
+        let t = self.get_reg(t) as i32;
+
+        let v = s < t;
+
+        self.set_reg(d, v as u32);
+    }
+
+    /// Set On Less Then Unsigned
+    fn op_sltu(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let v = self.get_reg(s) < self.get_reg(t);
+
+        self.set_reg(d, v as u32);
+    }
+
     /// Shift Right Logical
     fn op_srl(&mut self, instruction: Instruction) {
         let i = instruction.shift();
@@ -636,34 +720,6 @@ impl CPU {
         let v = self.get_reg(s).wrapping_sub(self.get_reg(t));
 
         self.set_reg(d, v);
-    }
-
-    /// Set On Less Then Unsigned
-    fn op_sltu(&mut self, instruction: Instruction) {
-        let d = instruction.rd();
-        let s = instruction.rs();
-        let t = instruction.rt();
-
-        let v = self.get_reg(s) < self.get_reg(t);
-
-        self.set_reg(d, v as u32);
-    }
-
-    /// Store Half-word
-    fn op_sh(&mut self, instruction: Instruction) {
-        if self.sr & 0x10000 != 0 {
-            // Ignore cache writes
-            println!("IGNORING_WRITE_WHILE_CACHE_IS_ISOLATED");
-        } else {
-            let i = instruction.immediate_signed();
-            let t = instruction.rt();
-            let s = instruction.rs();
-
-            let addr = self.get_reg(s).wrapping_add(i);
-            let v = self.get_reg(t);
-
-            self.mem_write16(addr, v as u16);
-        }
     }
 
     /// Shift Right Arithmetic
@@ -814,4 +870,10 @@ impl Instruction {
 
         op & 0x3f
     }
+}
+
+/// Exception types (as stored in the Cause register)
+enum Exception {
+    /// System call (caused by the SYSCALL opcode)
+    SysCall = 0x8,
 }

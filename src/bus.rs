@@ -12,6 +12,7 @@
 
 use crate::cpu::{BIOS, BIOS_SIZE};
 use crate::ram::RAM;
+use std::sync::mpsc::RecvTimeoutError::Timeout;
 
 /// BIOS image region
 const BIOS: MemRange = MemRange(0x1fc00000 , 512 * 1024);
@@ -42,6 +43,9 @@ const SPU: MemRange = MemRange(0x1f801c00, 640);
 
 /// Registers with an unknown purpose, the name comes from the Mednafen PSX implementation
 const SYS_CONTROL: MemRange = MemRange(0x1f801000, 36);
+
+/// Timer registers
+const TIMERS: MemRange = MemRange(0x1f801100, 0x30);
 
 /// Mask array used to strip the region bits of the address. The mask is selected using the 3 most
 /// significant bits of the address so each entry effectively matches 512KB of the address space.
@@ -115,6 +119,12 @@ impl Bus {
             return self.bios.mem_read32(offset);
         }
 
+        if let Some(offset) = IRQ_CONTROL.contains(abs_addr) {
+            println!("UNHANDLED_IRQ_CONTROL_READ32_0x{:08x}", abs_addr);
+            // TODO: Needs to return an actual value from the IRQ Control register
+            return 0;
+        }
+
         // RAM
         if let Some(offset) = RAM.contains(abs_addr) {
             return self.ram.mem_read32(offset);
@@ -148,8 +158,15 @@ impl Bus {
 
         let abs_addr = mask_region(addr);
 
+        // SPU
         if let Some(offset) = SPU.contains(abs_addr) {
             println!("UNHANDLED_SPU_REGISTER_WRITE16: 0x{:08x}", abs_addr);
+            return;
+        }
+
+        // TIMERS
+        if let Some(offset) = TIMERS.contains(abs_addr) {
+            println!("UNHANDLED_TIMER_REGISTER_WRITE16: 0x{:08x}", abs_addr);
             return;
         }
 
