@@ -81,26 +81,33 @@ impl CPU {
             0b000000 => match instruction.subfunction() {
                 0b000000 => self.op_sll(instruction),
                 0b001000 => self.op_jr(instruction),
+                0b001001 => self.op_jalr(instruction),
                 0b100000 => self.op_add(instruction),
                 0b100001 => self.op_addu(instruction),
+                0b100011 => self.op_subu(instruction),
                 0b100100 => self.op_and(instruction),
                 0b100101 => self.op_or(instruction),
                 0b101011 => self.op_sltu(instruction),
                 _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
             }
 
+            0b000001 => self.op_bxx(instruction),
             0b000010 => self.op_j(instruction),
             0b000011 => self.op_jal(instruction),
             0b000100 => self.op_beq(instruction),
             0b000101 => self.op_bne(instruction),
+            0b000110 => self.op_blez(instruction),
+            0b000111 => self.op_bgtz(instruction),
             0b001000 => self.op_addi(instruction),
             0b001001 => self.op_addiu(instruction),
+            0b001010 => self.op_slti(instruction),
             0b001100 => self.op_andi(instruction),
             0b001101 => self.op_ori(instruction),
             0b001111 => self.op_lui(instruction),
             0b010000 => self.op_cop0(instruction),
             0b100000 => self.op_lb(instruction),
             0b100011 => self.op_lw(instruction),
+            0b100100 => self.op_lbu(instruction),
             0b101000 => self.op_sb(instruction),
             0b101001 => self.op_sh(instruction),
             0b101011 => self.op_sw(instruction),
@@ -246,6 +253,30 @@ impl CPU {
         }
     }
 
+    /// Branch if Greater Than Zero
+    fn op_bgtz(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let s = instruction.rs();
+
+        let v = self.get_reg(s) as i32;
+
+        if v > 0 {
+            self.branch(i);
+        }
+    }
+
+    /// Branch if Less than or Equal to Zero
+    fn op_blez(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let s = instruction.rs();
+
+        let v = self.get_reg(s) as i32;
+
+        if v <= 0 {
+            self.branch(i);
+        }
+    }
+
     /// Branch If Not Equal
     fn op_bne(&mut self, instruction: Instruction) {
         let i = instruction.immediate_signed();
@@ -253,6 +284,38 @@ impl CPU {
         let t = instruction.rt();
 
         if self.get_reg(s) != self.get_reg(t) {
+            self.branch(i);
+        }
+    }
+
+    /// Generic branch instruction for BGEZ, BLTZ, BGEZAL, BLTZAL
+    /// Bits 16 and 20 are used to figure out which one to use
+    fn op_bxx(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let s = instruction.rs();
+
+        let instruction = instruction.0;
+
+        let is_bgez = (instruction >> 16) & 1;
+        let is_link = (instruction >> 20) & 1 != 0;
+
+        let v = self.get_reg(s) as i32;
+
+        // Test "less than zero"
+        let test = (v < 0) as u32;
+
+        // If the test is "greater than or equal to zero" we need to negate the comparison above
+        // since ("a >= 0" <=> "!(a < 0)"). The XOR takes cares of that.
+        let test = test ^ is_bgez;
+
+        if test != 0 {
+            if is_link {
+                let ra = self.pc;
+
+                // Store return address in R31
+                self.set_reg(RegisterIndex(31), ra);
+            }
+
             self.branch(i);
         }
     }
@@ -283,6 +346,19 @@ impl CPU {
         self.op_j(instruction);
     }
 
+    /// Jump And Link Register
+    fn op_jalr(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+
+        let ra = self.pc;
+
+        // Store return address in register d
+        self.set_reg(d, ra);
+
+        self.pc = self.get_reg(s);
+    }
+
     /// Jump Register
     fn op_jr(&mut self, instruction: Instruction) {
         let s = instruction.rs();
@@ -300,6 +376,19 @@ impl CPU {
 
         // Cast as i8 to force sign extension
         let v = self.mem_read8(addr) as i8;
+
+        // Put the load in the delay slot
+        self.load = (t, v as u32);
+    }
+
+    /// Load Byte Unsigned
+    fn op_lbu(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let t = instruction.rt();
+        let s = instruction.rs();
+
+        let addr = self.get_reg(s).wrapping_add(i);
+        let v = self.mem_read8(addr);
 
         // Put the load in the delay slot
         self.load = (t, v as u32);
@@ -420,6 +509,28 @@ impl CPU {
         let d = instruction.rd();
 
         let v = self.get_reg(t) << i;
+
+        self.set_reg(d, v);
+    }
+
+    /// Set if Less Than Immediate signed
+    fn op_slti(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed() as i32;
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let v = (self.get_reg(s) as i32) < i;
+
+        self.set_reg(t, v as u32);
+    }
+
+    /// Subtract Unsigned
+    fn op_subu(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+        let t = instruction.rt();
+        let d = instruction.rd();
+
+        let v = self.get_reg(s).wrapping_sub(self.get_reg(t));
 
         self.set_reg(d, v);
     }
