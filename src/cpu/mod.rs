@@ -17,6 +17,10 @@ pub struct CPU {
     /// The 2nd set of registers used to emulate the load-delay slot accurately. The contain
     /// the output of the current instruction.
     out_regs: [u32; 32],
+    /// HI register for division remainder and multiplication high result
+    hi: u32,
+    /// LO register for division remainder and multiplication low result
+    lo: u32,
     /// Load initiated by the current instruction
     load: (RegisterIndex, u32),
     /// Bus that controls memory access
@@ -40,6 +44,8 @@ impl CPU {
             regs,
             // The out-regs are the same as the the regular registers on reset
             out_regs: regs,
+            hi: 0xdeadbeef,
+            lo: 0xdeadbeef,
             load: (RegisterIndex(0), 0),
             bus,
         }
@@ -66,7 +72,12 @@ impl CPU {
         // We reset the load to target register 0 for the next instruction;
         self.load = (RegisterIndex(0), 0);
 
-        println!("Instruction: 0x{:08x} -- 0b{:06b} -- 0b{:06b}", instruction, Instruction(instruction).function(), Instruction(instruction).subfunction());
+        println!("Instruction: 0x{:08x} -- 0b{:06b} -- 0b{:06b} -- PC: 0x{:08x}",
+                instruction,
+                Instruction(instruction).function(),
+                Instruction(instruction).subfunction(),
+                pc
+        );
 
         self.exec(Instruction(instruction));
 
@@ -80,8 +91,14 @@ impl CPU {
             // Subfunctions
             0b000000 => match instruction.subfunction() {
                 0b000000 => self.op_sll(instruction),
+                0b000010 => self.op_srl(instruction),
+                0b000011 => self.op_sra(instruction),
                 0b001000 => self.op_jr(instruction),
                 0b001001 => self.op_jalr(instruction),
+                0b010000 => self.op_mfhi(instruction),
+                0b010010 => self.op_mflo(instruction),
+                0b011010 => self.op_div(instruction),
+                0b011011 => self.op_divu(instruction),
                 0b100000 => self.op_add(instruction),
                 0b100001 => self.op_addu(instruction),
                 0b100011 => self.op_subu(instruction),
@@ -101,6 +118,7 @@ impl CPU {
             0b001000 => self.op_addi(instruction),
             0b001001 => self.op_addiu(instruction),
             0b001010 => self.op_slti(instruction),
+            0b001011 => self.op_sltiu(instruction),
             0b001100 => self.op_andi(instruction),
             0b001101 => self.op_ori(instruction),
             0b001111 => self.op_lui(instruction),
@@ -329,6 +347,51 @@ impl CPU {
         }
     }
 
+    /// Divide signed
+    fn op_div(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let n = self.get_reg(s) as i32;
+        let d = self.get_reg(t) as i32;
+
+        if d == 0 {
+            // Division by zero, results are bogus
+            self.hi = n as u32;
+
+            if n >= 0 {
+                self.lo = 0xffffffff;
+            } else {
+                self.lo = 1;
+            }
+        } else if n as u32 == 0x80000000 && d == -1 {
+            // The result is not representable in a 32 bit signed integer
+            self.hi = 0;
+            self.lo = 0x80000000;
+        } else {
+            self.hi = (n % d) as u32;
+            self.lo = (n / d) as u32;
+        }
+    }
+
+    /// Divide Unsigned
+    fn op_divu(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let n = self.get_reg(s);
+        let d = self.get_reg(t);
+
+        if d == 0 {
+            // Divide by zero, results are bogus
+            self.hi == n;
+            self.lo == 0xffffffff;
+        } else {
+            self.hi = n % d;
+            self.lo = n / d;
+        }
+    }
+
     /// Jump
     fn op_j(&mut self, instruction: Instruction) {
         let i = instruction.immediate_jump();
@@ -372,7 +435,11 @@ impl CPU {
         let t = instruction.rt();
         let s = instruction.rs();
 
-        let addr = self.get_reg(s).wrapping_add(i);
+        let f = self.get_reg(s);
+
+        let g = format!("0x{:08x}", f);
+
+        let addr = f.wrapping_add(i);
 
         // Cast as i8 to force sign extension
         let v = self.mem_read8(addr) as i8;
@@ -434,6 +501,20 @@ impl CPU {
         };
 
         self.load = (cpu_r, v);
+    }
+
+    /// Move From HI
+    fn op_mfhi(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+
+        self.set_reg(d, self.hi);
+    }
+
+    /// Move From LO
+    fn op_mflo(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+
+        self.set_reg(d, self.lo);
     }
 
     /// Move To Coprocessor 0
@@ -524,6 +605,28 @@ impl CPU {
         self.set_reg(t, v as u32);
     }
 
+    /// Set if LEss Than Immediate Unsigned
+    fn op_sltiu(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let v = self.get_reg(s) < i;
+
+        self.set_reg(t, v as u32);
+    }
+
+    /// Shift Right Logical
+    fn op_srl(&mut self, instruction: Instruction) {
+        let i = instruction.shift();
+        let t = instruction.rt();
+        let d = instruction.rd();
+
+        let v = self.get_reg(t) >> i;
+
+        self.set_reg(d, v);
+    }
+
     /// Subtract Unsigned
     fn op_subu(&mut self, instruction: Instruction) {
         let s = instruction.rs();
@@ -561,6 +664,17 @@ impl CPU {
 
             self.mem_write16(addr, v as u16);
         }
+    }
+
+    /// Shift Right Arithmetic
+    fn op_sra(&mut self, instruction: Instruction) {
+        let i = instruction.shift();
+        let t = instruction.rt();
+        let d = instruction.rd();
+
+        let v = (self.get_reg(t) as i32) >> i;
+
+        self.set_reg(d, v as u32);
     }
 
     /// Store word
