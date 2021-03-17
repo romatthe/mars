@@ -10,9 +10,8 @@
 //! 1FC00000h 9FC00000h BFC00000h  512K   BIOS ROM (Kernel) (4096K max)
 //!       FFFE0000h (KSEG2)        0.5K   I/O Ports (Cache Control)
 
-use crate::cpu::{BIOS, BIOS_SIZE};
+use crate::cpu::BIOS;
 use crate::ram::RAM;
-use std::sync::mpsc::RecvTimeoutError::Timeout;
 
 /// BIOS image region
 const BIOS: MemRange = MemRange(0x1fc00000 , 512 * 1024);
@@ -28,6 +27,9 @@ const EXPANSION1: MemRange = MemRange(0x1f000000, 512 * 1024);
 
 /// Expansion 2 region
 const EXPANSION2: MemRange = MemRange(0x1f802000, 66);
+
+/// GPU registers
+const GPU: MemRange = MemRange(0x1f801810, 8);
 
 /// Interrupt Control registers
 const IRQ_CONTROL: MemRange = MemRange(0x1f801070, 8);
@@ -96,7 +98,7 @@ impl Bus {
             return self.bios.mem_read8(offset);
         }
 
-        if let Some(offset) = EXPANSION1.contains(abs_addr) {
+        if let Some(_offset) = EXPANSION1.contains(abs_addr) {
             // No expansion implemented
             return 0xff;
         }
@@ -112,13 +114,19 @@ impl Bus {
     pub fn mem_read16(&self, addr: u32) -> u16 {
         let abs_addr = mask_region(addr);
 
+        // IRQ Control
+        if let Some(_offset) = IRQ_CONTROL.contains(abs_addr) {
+            println!("IRQ_CONTROL_READ_{:08x}", abs_addr);
+            return 0;
+        }
+
         // RAM
-        if let Some(offset) = RAM.contains(abs_addr) {
+        if let Some(_offset) = RAM.contains(abs_addr) {
             return self.ram.mem_read16(abs_addr);
         }
 
         // SPU
-        if let Some(offset) = SPU.contains(abs_addr) {
+        if let Some(_offset) = SPU.contains(abs_addr) {
             println!("UNHANDLED_READ16_AT_ADDRESS_0x{:08x}", abs_addr);
             return 0;
         }
@@ -141,14 +149,22 @@ impl Bus {
         }
 
         // DMA
-        if let Some(offset) = DMA.contains(abs_addr) {
+        if let Some(_offset) = DMA.contains(abs_addr) {
             // TODO: Handle this
-            println!("DMA_READ_{:08x}", abs_addr);
+            println!("DMA_READ_0x{:08x}", abs_addr);
             return 0;
         }
 
+        // GPU
+        if let Some(offset) = GPU.contains(abs_addr) {
+            return match offset {
+                4 => 0x10000000,
+                _ => 0,
+            }
+        }
+
         // IRQ Control
-        if let Some(offset) = IRQ_CONTROL.contains(abs_addr) {
+        if let Some(_offset) = IRQ_CONTROL.contains(abs_addr) {
             println!("UNHANDLED_IRQ_CONTROL_READ32_0x{:08x}", abs_addr);
             // TODO: Needs to return an actual value from the IRQ Control register
             return 0;
@@ -167,7 +183,7 @@ impl Bus {
         let abs_addr = mask_region(addr);
 
         // EXPANSION2
-        if let Some(offset) = EXPANSION2.contains(abs_addr) {
+        if let Some(_offset) = EXPANSION2.contains(abs_addr) {
             println!("UNHANDLED_EXPANSION2_REGISTER_WRITE8: 0x{:08x}", abs_addr);
             return;
         }
@@ -189,19 +205,25 @@ impl Bus {
 
         let abs_addr = mask_region(addr);
 
+        // IRQ Control
+        if let Some(_offset) = IRQ_CONTROL.contains(abs_addr) {
+            println!("IRQ_CONTROL_WRITE_0x{:08x}_{:04x}", abs_addr, val);
+            return;
+        }
+
         // RAM
         if let Some(offset) = RAM.contains(abs_addr) {
             return self.ram.mem_write16(offset, val);
         }
 
         // SPU
-        if let Some(offset) = SPU.contains(abs_addr) {
+        if let Some(_offset) = SPU.contains(abs_addr) {
             println!("UNHANDLED_SPU_REGISTER_WRITE16: 0x{:08x}", abs_addr);
             return;
         }
 
         // TIMERS
-        if let Some(offset) = TIMERS.contains(abs_addr) {
+        if let Some(_offset) = TIMERS.contains(abs_addr) {
             println!("UNHANDLED_TIMER_REGISTER_WRITE16: 0x{:08x}", abs_addr);
             return;
         }
@@ -227,7 +249,14 @@ impl Bus {
         // DMA
         if let Some(offset) = DMA.contains(abs_addr) {
             // TODO: Handle this
-            println!("DMA_WRITE_{:08x}_{:08x}", abs_addr, val);
+            println!("DMA_WRITE_{:08x}_{:08x}", offset, val);
+            return;
+        }
+
+        // GPU
+        if let Some(offset) = GPU.contains(abs_addr) {
+            // TODO: Handle this
+            println!("GPU_WRITE_{:08x}_{:08x}", offset, val);
             return;
         }
 
@@ -270,6 +299,12 @@ impl Bus {
         // RAM_SIZE register
         if let Some(_) = RAM_SIZE.contains(abs_addr) {
             // TODO: We're ignoring this right now, not sure if this should be the case
+            return;
+        }
+
+        // Timers
+        if let Some(_offset) = TIMERS.contains(abs_addr) {
+            println!("UNHANDLED_TIMERS_REGISTER_WRITE32_0x{:08x}_0x{:08x}", abs_addr, val);
             return;
         }
 
