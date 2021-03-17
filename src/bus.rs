@@ -20,6 +20,9 @@ const BIOS: MemRange = MemRange(0x1fc00000 , 512 * 1024);
 /// Cache control register (Full address since it's in KSEG2)
 const CACHE_CONTROL: MemRange = MemRange(0xfffe0130, 4);
 
+/// Direct Memory Access registers
+const DMA: MemRange = MemRange(0x1f801080, 0x80);
+
 /// Expansion 1 region
 const EXPANSION1: MemRange = MemRange(0x1f000000, 512 * 1024);
 
@@ -102,7 +105,25 @@ impl Bus {
             return self.ram.mem_read8(offset);
         }
 
-        panic!("UNHANDLED_READ8_AT_ADDRESS_0x{:08x}", abs_addr);
+        panic!("UNHANDLED_READ8_AT_ADDRESS_0x{:08x}", addr);
+    }
+
+    /// Read a 16-bit half-word from memory at the specified address
+    pub fn mem_read16(&self, addr: u32) -> u16 {
+        let abs_addr = mask_region(addr);
+
+        // RAM
+        if let Some(offset) = RAM.contains(abs_addr) {
+            return self.ram.mem_read16(abs_addr);
+        }
+
+        // SPU
+        if let Some(offset) = SPU.contains(abs_addr) {
+            println!("UNHANDLED_READ16_AT_ADDRESS_0x{:08x}", abs_addr);
+            return 0;
+        }
+
+        panic!("UNHANDLED_READ16_AT_ADDRESS_0x{:08x}", addr);
     }
 
     /// Read a 32-bit word from memory at the specified address
@@ -119,6 +140,14 @@ impl Bus {
             return self.bios.mem_read32(offset);
         }
 
+        // DMA
+        if let Some(offset) = DMA.contains(abs_addr) {
+            // TODO: Handle this
+            println!("DMA_READ_{:08x}", abs_addr);
+            return 0;
+        }
+
+        // IRQ Control
         if let Some(offset) = IRQ_CONTROL.contains(abs_addr) {
             println!("UNHANDLED_IRQ_CONTROL_READ32_0x{:08x}", abs_addr);
             // TODO: Needs to return an actual value from the IRQ Control register
@@ -130,18 +159,20 @@ impl Bus {
             return self.ram.mem_read32(offset);
         }
 
-        panic!("UNHANDLED_READ32_AT_ADDRESS_0x{:08x}", abs_addr);
+        panic!("UNHANDLED_READ32_AT_ADDRESS_0x{:08x}", addr);
     }
 
     /// Write a single byte to memory at the specified address
     pub fn mem_write8(&mut self, addr: u32, val: u8) {
         let abs_addr = mask_region(addr);
 
+        // EXPANSION2
         if let Some(offset) = EXPANSION2.contains(abs_addr) {
             println!("UNHANDLED_EXPANSION2_REGISTER_WRITE8: 0x{:08x}", abs_addr);
             return;
         }
 
+        // RAM
         if let Some(offset) = RAM.contains(abs_addr) {
             return self.ram.mem_write8(offset, val);
         }
@@ -157,6 +188,11 @@ impl Bus {
         }
 
         let abs_addr = mask_region(addr);
+
+        // RAM
+        if let Some(offset) = RAM.contains(abs_addr) {
+            return self.ram.mem_write16(offset, val);
+        }
 
         // SPU
         if let Some(offset) = SPU.contains(abs_addr) {
@@ -188,6 +224,14 @@ impl Bus {
             return;
         }
 
+        // DMA
+        if let Some(offset) = DMA.contains(abs_addr) {
+            // TODO: Handle this
+            println!("DMA_WRITE_{:08x}_{:08x}", abs_addr, val);
+            return;
+        }
+
+        // IRQ Control
         if let Some(offset) = IRQ_CONTROL.contains(abs_addr) {
             println!("IRQ_CONTROL:{:x}<-{:08x}", offset, val);
             // TODO: This is a bit disgusting
@@ -229,7 +273,7 @@ impl Bus {
             return;
         }
 
-        panic!("UNHANDLED_WRITE32_AT_ADDRESS_0x{:08x}", abs_addr);
+        panic!("UNHANDLED_WRITE32_AT_ADDRESS_0x{:08x}", addr);
     }
 }
 

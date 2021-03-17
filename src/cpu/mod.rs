@@ -120,6 +120,9 @@ impl CPU {
                 0b000000 => self.op_sll(instruction),
                 0b000010 => self.op_srl(instruction),
                 0b000011 => self.op_sra(instruction),
+                0b000100 => self.op_sllv(instruction),
+                0b000110 => self.op_srlv(instruction),
+                0b000111 => self.op_srav(instruction),
                 0b001000 => self.op_jr(instruction),
                 0b001001 => self.op_jalr(instruction),
                 0b001100 => self.op_syscall(instruction),
@@ -127,6 +130,7 @@ impl CPU {
                 0b010001 => self.op_mthi(instruction),
                 0b010010 => self.op_mflo(instruction),
                 0b010011 => self.op_mtlo(instruction),
+                0b011001 => self.op_multu(instruction),
                 0b011010 => self.op_div(instruction),
                 0b011011 => self.op_divu(instruction),
                 0b100000 => self.op_add(instruction),
@@ -134,6 +138,7 @@ impl CPU {
                 0b100011 => self.op_subu(instruction),
                 0b100100 => self.op_and(instruction),
                 0b100101 => self.op_or(instruction),
+                0b100111 => self.op_nor(instruction),
                 0b101010 => self.op_slt(instruction),
                 0b101011 => self.op_sltu(instruction),
                 _ => unimplemented!("UNHANDLED_INSTRUCTION_0x{:08x}", instruction.0),
@@ -155,8 +160,10 @@ impl CPU {
             0b001111 => self.op_lui(instruction),
             0b010000 => self.op_cop0(instruction),
             0b100000 => self.op_lb(instruction),
+            0b100001 => self.op_lh(instruction),
             0b100011 => self.op_lw(instruction),
             0b100100 => self.op_lbu(instruction),
+            0b100101 => self.op_lhu(instruction),
             0b101000 => self.op_sb(instruction),
             0b101001 => self.op_sh(instruction),
             0b101011 => self.op_sw(instruction),
@@ -179,6 +186,11 @@ impl CPU {
     /// Read a single byte from memory at the specified address
     fn mem_read8(&self, addr: u32) -> u8 {
         self.bus.mem_read8(addr)
+    }
+
+    /// Read a 16-bit word from memory at the specified address
+    fn mem_read16(&self, addr: u32) -> u16 {
+        self.bus.mem_read16(addr)
     }
 
     /// Read a 32-bit word from memory at the specified address
@@ -262,7 +274,7 @@ impl CPU {
         let t = self.get_reg(t) as i32;
 
         // Check for overflow
-        let v = match s.checked_add(t) {
+        match s.checked_add(t) {
             Some(v) => self.set_reg(d, v as u32),
             None => self.exception(Exception::Overflow),
         };
@@ -277,7 +289,7 @@ impl CPU {
         let s = self.get_reg(s) as i32;
 
         // Check for overflow
-        let v = match s.checked_add(i) {
+        match s.checked_add(i) {
             Some(v) => self.set_reg(t, v as u32),
             None => self.exception(Exception::Overflow),
         };
@@ -452,8 +464,8 @@ impl CPU {
 
         if d == 0 {
             // Divide by zero, results are bogus
-            self.hi == n;
-            self.lo == 0xffffffff;
+            self.hi = n;
+            self.lo = 0xffffffff;
         } else {
             self.hi = n % d;
             self.lo = n / d;
@@ -531,6 +543,40 @@ impl CPU {
 
         // Put the load in the delay slot
         self.load = (t, v as u32);
+    }
+
+    /// Load Halfword signed
+    fn op_lh(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let t = instruction.rt();
+        let s = instruction.rs();
+
+        let addr = self.get_reg(s).wrapping_add(i);
+
+        // Cast as i16 to force sign extension
+        let v = self.mem_read16(addr) as i16;
+
+        // Put the load in the delay slot
+        self.load = (t, v as u32);
+    }
+
+    /// Load Half-word Unsigned
+    fn op_lhu(&mut self, instruction: Instruction) {
+        let i = instruction.immediate_signed();
+        let t = instruction.rt();
+        let s = instruction.rs();
+
+        let addr = self.get_reg(s).wrapping_add(i);
+
+        // Address must be 16 bit aligned
+        if addr % 2 == 0 {
+            let v = self.mem_read16(addr);
+
+            // Put the load in the delay slot
+            self.load = (t, v as u32);
+        } else {
+            self.exception(Exception::ReadAddressError);
+        }
     }
 
     /// Load Upper Immediate
@@ -638,6 +684,31 @@ impl CPU {
         }
     }
 
+    /// Multiply Unsigned
+    fn op_multu(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let a = self.get_reg(s) as u64;
+        let b = self.get_reg(t) as u64;
+
+        let v = a * b;
+
+        self.hi = (v >> 32) as u32;
+        self.lo = v as u32;
+    }
+
+    /// Bitwise Not OR
+    fn op_nor(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        let v = !(self.get_reg(s) | self.get_reg(t));
+
+        self.set_reg(d, v);
+    }
+
     /// Bitwise OR
     fn op_or(&mut self, instruction: Instruction) {
         let d = instruction.rd();
@@ -727,6 +798,18 @@ impl CPU {
         self.set_reg(d, v);
     }
 
+    /// Shift Left Logical Variable
+    fn op_sllv(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        // Shift amount is truncated to 5 bits
+        let v = self.get_reg(t) << (self.get_reg(s) & 0x1f);
+
+        self.set_reg(d, v);
+    }
+
     /// Set if Less Than Immediate signed
     fn op_slti(&mut self, instruction: Instruction) {
         let i = instruction.immediate_signed() as i32;
@@ -774,6 +857,18 @@ impl CPU {
         self.set_reg(d, v as u32);
     }
 
+    /// Shift Right Arithmetic Variable
+    fn op_srav(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        // Shift amount is truncated to 5 bits
+        let v = (self.get_reg(t) as i32) >> (self.get_reg(s) & 0x1f);
+
+        self.set_reg(d, v as u32);
+    }
+
     /// Shift Right Logical
     fn op_srl(&mut self, instruction: Instruction) {
         let i = instruction.shift();
@@ -781,6 +876,18 @@ impl CPU {
         let d = instruction.rd();
 
         let v = self.get_reg(t) >> i;
+
+        self.set_reg(d, v);
+    }
+
+    /// Shift Right Logical Variable
+    fn op_srlv(&mut self, instruction: Instruction) {
+        let d = instruction.rd();
+        let s = instruction.rs();
+        let t = instruction.rt();
+
+        // Shift amount is truncated to 5 bits
+        let v = self.get_reg(t) >> (self.get_reg(s) & 0x1f);
 
         self.set_reg(d, v);
     }
