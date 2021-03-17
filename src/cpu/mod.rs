@@ -29,6 +29,11 @@ pub struct CPU {
     lo: u32,
     /// Load initiated by the current instruction
     load: (RegisterIndex, u32),
+    /// Set the current instruction if a branch occurred and the next instruction will be in the
+    /// delay slot
+    branch: bool,
+    /// Set if the current instruction executes in the delay slot
+    delay_slot: bool,
     /// Bus that controls memory access
     bus: Bus,
 }
@@ -58,21 +63,33 @@ impl CPU {
             hi: 0xdeadbeef,
             lo: 0xdeadbeef,
             load: (RegisterIndex(0), 0),
+            branch: false,
+            delay_slot: false,
             bus,
         }
     }
 
     /// Fetch the next instruction and execute it
     pub fn step(&mut self) {
-        // Fetch the instruction at the current PC
-        let instruction = Instruction(self.mem_read32(self.pc));
-
         // Save the address of the current instruction to save in `EPC` in case of an exception
         self.pc_current = self.pc;
+
+        // Check if Program Counter is not correctly aligned
+        if self.pc_current % 4 != 0 {
+            self.exception(Exception::ReadAddressError);
+            return;
+        }
+
+        // Fetch the instruction at the current PC
+        let instruction = Instruction(self.mem_read32(self.pc));
 
         // Increment the next PC to point to the next instruction
         self.pc = self.pc_next;
         self.pc_next = self.pc_next.wrapping_add(4);
+
+        // If the last instruction was a branch then we're in the delay slot
+        self.delay_slot = self.branch;
+        self.branch = false;
 
         // Execute the pending load (if any, otherwise it will load $zero which is NOP).
         // `set_reg` works only on `out_regs` so this operation won't be visible the next instruction.
@@ -107,7 +124,9 @@ impl CPU {
                 0b001001 => self.op_jalr(instruction),
                 0b001100 => self.op_syscall(instruction),
                 0b010000 => self.op_mfhi(instruction),
+                0b010001 => self.op_mthi(instruction),
                 0b010010 => self.op_mflo(instruction),
+                0b010011 => self.op_mtlo(instruction),
                 0b011010 => self.op_div(instruction),
                 0b011011 => self.op_divu(instruction),
                 0b100000 => self.op_add(instruction),
@@ -188,10 +207,9 @@ impl CPU {
         // have to be aligned on 32 bits at all times
         let offset = offset << 2;
 
-        self.pc_next = self.pc
-            .wrapping_add(offset);
-            // We need to compensate for the hardcoded `pc.wrapping_add(4)` in `exec()`
-            // .wrapping_sub(4);
+        self.pc_next = self.pc.wrapping_add(offset);
+
+        self.branch = true;
     }
 
     /// Trigger an exception
@@ -208,7 +226,7 @@ impl CPU {
         // and puts the CPU in kernel mode. The original third entry is discarded (it's up to the
         // kernel to handle mode than two recursive exception levels).
         let mode = self.sr & 0x3f;
-        self.sr = self.sr & 0x3f;
+        self.sr = self.sr & !0x3f;
         self.sr = self.sr | (mode << 2) & 0x3f;
 
         // Update the Cause register with the exception code (bits [6:2])
@@ -216,6 +234,13 @@ impl CPU {
 
         // Save current instruction address in 'EPC'
         self.epc = self.pc_current;
+
+        if self.delay_slot {
+            // When an exception occurs in a delay slot 'EPC' points to the branch instruction
+            // and bit 31 of 'Cause' is set
+            self.epc = self.epc.wrapping_sub(4);
+            self.cause = self.cause | (1 << 31);
+        }
 
         // Exceptions do not have a branch delay, we dump directly in the handler
         self.pc = handler;
@@ -227,6 +252,22 @@ impl CPU {
         self.exception(Exception::SysCall);
     }
 
+    /// Add and generate an exception on overflow
+    fn op_add(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+        let t = instruction.rt();
+        let d = instruction.rd();
+
+        let s = self.get_reg(s) as i32;
+        let t = self.get_reg(t) as i32;
+
+        // Check for overflow
+        let v = match s.checked_add(t) {
+            Some(v) => self.set_reg(d, v as u32),
+            None => self.exception(Exception::Overflow),
+        };
+    }
+
     /// Add Immediate Unsigned and check for overflow
     fn op_addi(&mut self, instruction: Instruction) {
         let i = instruction.immediate_signed() as i32;
@@ -235,13 +276,11 @@ impl CPU {
 
         let s = self.get_reg(s) as i32;
 
+        // Check for overflow
         let v = match s.checked_add(i) {
-            Some(v) => v as u32,
-            // TODO: Should trigger an exception
-            None => panic!("OVERFLOW_IN_ADDI"),
+            Some(v) => self.set_reg(t, v as u32),
+            None => self.exception(Exception::Overflow),
         };
-
-        self.set_reg(t, v);
     }
 
     /// Add Immediate Unsigned
@@ -253,23 +292,6 @@ impl CPU {
         let v = self.get_reg(s).wrapping_add(i);
 
         self.set_reg(t, v);
-    }
-
-    /// Add and generate an exception on overflow
-    fn op_add(&mut self, instruction: Instruction) {
-        let s = instruction.rs();
-        let t = instruction.rt();
-        let d = instruction.rd();
-
-        let s = self.get_reg(s) as i32;
-        let t = self.get_reg(t) as i32;
-
-        let v = match s.checked_add(t) {
-            Some(v) => v as u32,
-            None => panic!("ADD_OVERFLOW"),
-        };
-
-        self.set_reg(d, v);
     }
 
     /// Add Unsigned
@@ -388,6 +410,7 @@ impl CPU {
         match instruction.cop_opcode() {
             0b00000 => self.op_mfc0(instruction),
             0b00100 => self.op_mtc0(instruction),
+            0b10000 => self.op_rfe(instruction),
             code => unimplemented!("UNHANDLED_COP0_INSTRUCTION_0x{:08x}", code),
         }
     }
@@ -442,6 +465,8 @@ impl CPU {
         let i = instruction.immediate_jump();
 
         self.pc_next = (self.pc & 0xf0000000) | (i << 2);
+
+        self.branch = true;
     }
 
     /// Jump and Link
@@ -452,6 +477,8 @@ impl CPU {
         self.set_reg(RegisterIndex(31), ra);
 
         self.op_j(instruction);
+
+        self.branch = true;
     }
 
     /// Jump And Link Register
@@ -465,6 +492,8 @@ impl CPU {
         self.set_reg(d, ra);
 
         self.pc_next = self.get_reg(s);
+
+        self.branch = true;
     }
 
     /// Jump Register
@@ -472,6 +501,8 @@ impl CPU {
         let s = instruction.rs();
 
         self.pc_next = self.get_reg(s);
+
+        self.branch = true;
     }
 
     /// Load Byte
@@ -524,9 +555,16 @@ impl CPU {
             let s = instruction.rs();
 
             let addr = self.get_reg(s).wrapping_add(i);
-            let v = self.mem_read32(addr);
 
-            self.load = (t, v);
+            // Address must be 32 bit aligned
+            if addr % 4 == 0 {
+                let v = self.mem_read32(addr);
+
+                // Put the load in the delay slot
+                self.load = (t, v);
+            } else {
+                self.exception(Exception::ReadAddressError);
+            }
         }
     }
 
@@ -557,6 +595,20 @@ impl CPU {
         let d = instruction.rd();
 
         self.set_reg(d, self.lo);
+    }
+
+    /// Move to LO
+    fn op_mtlo(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+
+        self.lo = self.get_reg(s);
+    }
+
+    /// Move to HI
+    fn op_mthi(&mut self, instruction: Instruction) {
+        let s = instruction.rs();
+
+        self.hi = self.get_reg(s);
     }
 
     /// Move To Coprocessor 0
@@ -608,6 +660,21 @@ impl CPU {
         self.set_reg(t, v);
     }
 
+    /// Return From Exception
+    fn op_rfe(&mut self, instruction: Instruction) {
+        // There are other instructions with the same encoding but all are virtual memory related
+        // and the PSX doesn't implement them. Still, let's make sure we're not running buggy code.
+        if instruction.0 & 0x3f != 0b010000 {
+            panic!("INVALID_COP0_INSTRUCTION_0x{:08x}", instruction.0);
+        }
+
+        // Restore the pre-exception mode by shifting the "Interrupt Enable / User Mode" stack
+        // back to its original position.
+        let mode = self.sr & 0x3f;
+        self.sr = self.sr & !0x3f;
+        self.sr = self.sr | (mode >> 2);
+    }
+
     /// Store Byte
     fn op_sb(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
@@ -637,6 +704,13 @@ impl CPU {
 
             let addr = self.get_reg(s).wrapping_add(i);
             let v = self.get_reg(t);
+
+            // Address must be 16 bit aligned
+            if addr % 2 == 0 {
+                self.mem_write16(addr, v as u16);
+            } else {
+                self.exception(Exception::WriteAddressError);
+            }
 
             self.mem_write16(addr, v as u16);
         }
@@ -746,7 +820,11 @@ impl CPU {
             let addr = self.get_reg(s).wrapping_add(i);
             let val = self.get_reg(t);
 
-            self.mem_write32(addr, val);
+            if addr % 4 == 0 {
+                self.mem_write32(addr, val);
+            } else {
+                self.exception(Exception::WriteAddressError);
+            }
         }
     }
 }
@@ -874,6 +952,12 @@ impl Instruction {
 
 /// Exception types (as stored in the Cause register)
 enum Exception {
+    /// Arithmetic overflow
+    Overflow = 0xc,
+    /// Address error on read
+    ReadAddressError = 0x4,
     /// System call (caused by the SYSCALL opcode)
     SysCall = 0x8,
+    /// Address error on write
+    WriteAddressError = 0x5,
 }
