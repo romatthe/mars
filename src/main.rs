@@ -5,6 +5,7 @@ use crate::ram::RAM;
 
 mod bus;
 mod cpu;
+mod dma;
 mod ram;
 
 fn main() {
